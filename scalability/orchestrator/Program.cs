@@ -207,7 +207,7 @@ namespace orchestrator
             for (int i = NUM_CORES_MIN; i <= NUM_CORES_MAX; i++)
             {
                 Console.WriteLine($"{i} cores: {eventCounts[i].Item1:N} events fired, {eventCounts[i].Item2:N} events dropped.");
-                Console.WriteLine($"\t({(long)eventCounts[i].Item1/60:N} events/s) ({((long)eventCounts[i].Item1*EVENT_SIZE)/60:N} bytes/s)");
+                Console.WriteLine($"\t({(long)eventCounts[i].Item1/60:N} events/s) ({((long)eventCounts[i].Item1*EVENT_SIZE*sizeof(char))/60:N} bytes/s)");
             }
         }
     }
