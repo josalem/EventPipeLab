@@ -2,6 +2,8 @@
 using System.Diagnostics.Tracing;
 using System.Threading;
 
+using Common;
+
 namespace corescaletest
 {
     class MySource : EventSource
@@ -15,15 +17,18 @@ namespace corescaletest
         public void FireBigEvent() { WriteEvent(1, s_BigPayload); }
         public void FireEvent() => WriteEvent(1, s_Payload);
     }
+
     class Program
     {
         private static bool finished = false;
-        private static int sleepTimeInMs = -1;
-
+        private static int eventRate = -1;
+        private static BurstPattern burstPattern = BurstPattern.NONE;
         private static Action threadProc = null;
-
-        private static Action unlimitedThreadProc = () => { while (!finished) { MySource.Log.FireEvent(); } };
-        private static Action limitedThreadProc = () => { while (!finished) { MySource.Log.FireEvent(); Thread.Sleep(sleepTimeInMs); } };
+        private static Func<Action> makeThreadProc = () =>
+        {
+            Action burst = BurstPatternMethods.Burst(burstPattern, eventRate, MySource.Log.FireEvent);
+            return () => { while (!finished) { burst(); } };
+        };
 
         static void Main(string[] args)
         {
@@ -35,12 +40,11 @@ namespace corescaletest
 
             int numThreads = args.Length > 0 ? Int32.Parse(args[0]) : 4;
             int eventSize = args.Length > 1 ? Int32.Parse(args[1]) : 100;
-            int eventRate = args.Length > 2 ? Int32.Parse(args[2]) : -1;
+            eventRate = args.Length > 2 ? Int32.Parse(args[2]) : -1;
 
             MySource.s_Payload = new String('a', eventSize);
-            sleepTimeInMs = (int)Math.Floor(1000.0 / eventRate);
 
-            threadProc = sleepTimeInMs != -1 ? limitedThreadProc : unlimitedThreadProc;
+            threadProc = makeThreadProc();
 
             Thread[] threads = new Thread[numThreads];
 

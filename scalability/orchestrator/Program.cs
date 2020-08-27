@@ -15,6 +15,8 @@ using System.Threading.Tasks;
 using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
 
+using Common;
+
 namespace orchestrator
 {
     class Program
@@ -32,6 +34,8 @@ namespace orchestrator
         static string READER_TYPE = "EPES";
 
         static int EVENT_SIZE = 100;
+
+        static BurstPattern burstPattern = BurstPattern.DRIP;
 
         static Dictionary<int, (long, long)> eventCounts;
 
@@ -57,7 +61,7 @@ namespace orchestrator
 #endif // _WINDOWS
             if (args.Length < 1)
             {
-                Console.WriteLine("Usage: dotnet run [path-to-corescaletest.exe] [eventsize] [core min] [core max] [numThreads] [reader type (stream|EPES)] [event rate]");
+                Console.WriteLine("Usage: dotnet run [path-to-corescaletest.exe] [eventsize] [core min] [core max] [numThreads] [reader type (stream|EPES)] [event rate] [burst pattern]");
                 return;
             }
             if (!File.Exists(args[0]))
@@ -80,13 +84,17 @@ namespace orchestrator
             }
 
             EVENT_RATE = args.Length > 6 ? Int32.Parse(args[6]) : -1;
+            burstPattern = args.Length > 7 ? args[7].ToBurstPattern() : BurstPattern.NONE;
 
             if (READER_TYPE == "stream")
                 threadProc = UseFS;
             else
                 threadProc = UseEPES;
 
-            Console.WriteLine($"Configuration: event_size={EVENT_SIZE}, min_cores={NUM_CORES_MIN}, max_cores={NUM_CORES_MAX}, num_threads={NUM_THREADS}, reader={READER_TYPE}, event_rate={EVENT_RATE}");
+            if (EVENT_RATE == -1 && burstPattern != BurstPattern.NONE)
+                throw new ArgumentException("Must have burst pattern of NONE if rate is -1");
+
+            Console.WriteLine($"Configuration: event_size={EVENT_SIZE}, min_cores={NUM_CORES_MIN}, max_cores={NUM_CORES_MAX}, num_threads={NUM_THREADS}, reader={READER_TYPE}, event_rate={EVENT_RATE}, burst_pattern={burstPattern.ToString()}");
 
             Measure(args[0]);
         }
@@ -168,7 +176,7 @@ namespace orchestrator
 
                 Process eventWritingProc = new Process();
                 eventWritingProc.StartInfo.FileName = fileName;
-                eventWritingProc.StartInfo.Arguments = $"{(NUM_THREADS == -1 ? num_cores.ToString() : NUM_THREADS.ToString())} {EVENT_SIZE} {EVENT_RATE}";
+                eventWritingProc.StartInfo.Arguments = $"{(NUM_THREADS == -1 ? num_cores.ToString() : NUM_THREADS.ToString())} {EVENT_SIZE} {EVENT_RATE} {burstPattern}";
                 eventWritingProc.StartInfo.UseShellExecute = false;
                 eventWritingProc.StartInfo.RedirectStandardInput = true;
                 eventWritingProc.Start();
