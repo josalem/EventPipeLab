@@ -27,6 +27,8 @@ namespace orchestrator
 
         static int NUM_THREADS = -1;
 
+        static int EVENT_RATE = -1;
+
         static string READER_TYPE = "EPES";
 
         static int EVENT_SIZE = 100;
@@ -55,7 +57,7 @@ namespace orchestrator
 #endif // _WINDOWS
             if (args.Length < 1)
             {
-                Console.WriteLine("Usage: dotnet run [path-to-corescaletest.exe] [eventsize] [core min] [core max] [numThreads] [reader type (stream|EPES)]");
+                Console.WriteLine("Usage: dotnet run [path-to-corescaletest.exe] [eventsize] [core min] [core max] [numThreads] [reader type (stream|EPES)] [event rate]");
                 return;
             }
             if (!File.Exists(args[0]))
@@ -77,12 +79,14 @@ namespace orchestrator
                 };
             }
 
+            EVENT_RATE = args.Length > 6 ? Int32.Parse(args[6]) : -1;
+
             if (READER_TYPE == "stream")
                 threadProc = UseFS;
             else
                 threadProc = UseEPES;
 
-            Console.WriteLine($"Configuration: event_size={EVENT_SIZE}, min_cores={NUM_CORES_MIN}, max_cores={NUM_CORES_MAX}, num_threads={NUM_THREADS}, reader={READER_TYPE}");
+            Console.WriteLine($"Configuration: event_size={EVENT_SIZE}, min_cores={NUM_CORES_MIN}, max_cores={NUM_CORES_MAX}, num_threads={NUM_THREADS}, reader={READER_TYPE}, event_rate={EVENT_RATE}");
 
             Measure(args[0]);
         }
@@ -164,7 +168,7 @@ namespace orchestrator
 
                 Process eventWritingProc = new Process();
                 eventWritingProc.StartInfo.FileName = fileName;
-                eventWritingProc.StartInfo.Arguments = $"{(NUM_THREADS == -1 ? num_cores.ToString() : NUM_THREADS.ToString())} {EVENT_SIZE}";
+                eventWritingProc.StartInfo.Arguments = $"{(NUM_THREADS == -1 ? num_cores.ToString() : NUM_THREADS.ToString())} {EVENT_SIZE} {EVENT_RATE}";
                 eventWritingProc.StartInfo.UseShellExecute = false;
                 eventWritingProc.StartInfo.RedirectStandardInput = true;
                 eventWritingProc.Start();

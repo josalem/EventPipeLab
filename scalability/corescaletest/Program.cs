@@ -18,39 +18,38 @@ namespace corescaletest
     class Program
     {
         private static bool finished = false;
-        static void ThreadProc()
-        {
-            while(true)
-            {
-                if (finished)
-                {
-                    break;
-                }
-                MySource.Log.FireEvent();
-            }
-        }
+        private static int sleepTimeInMs = -1;
+
+        private static Action threadProc = null;
+
+        private static Action unlimitedThreadProc = () => { while (!finished) { MySource.Log.FireEvent(); } };
+        private static Action limitedThreadProc = () => { while (!finished) { MySource.Log.FireEvent(); Thread.Sleep(sleepTimeInMs); } };
 
         static void Main(string[] args)
         {
             if (args.Length == 0)
             {
-                Console.WriteLine("Usage: dotnet run [number of threads] [event size]");
+                Console.WriteLine("Usage: dotnet run [number of threads] [event size] [event rate #/sec]");
                 return;
             }
 
             int numThreads = args.Length > 0 ? Int32.Parse(args[0]) : 4;
             int eventSize = args.Length > 1 ? Int32.Parse(args[1]) : 100;
+            int eventRate = args.Length > 2 ? Int32.Parse(args[2]) : -1;
+
+            MySource.s_Payload = new String('a', eventSize);
+            sleepTimeInMs = (int)Math.Floor(1000.0 / eventRate);
+
+            threadProc = sleepTimeInMs != -1 ? limitedThreadProc : unlimitedThreadProc;
 
             Thread[] threads = new Thread[numThreads];
 
             for (int i = 0; i < numThreads; i++)
             {
-                threads[i] = new Thread(ThreadProc);
+                threads[i] = new Thread(() => threadProc());
             }
 
-            MySource.s_Payload = new String('a', eventSize);
-
-            Console.WriteLine($"Running {numThreads} threads with event size {eventSize * sizeof(char):N} bytes");
+            Console.WriteLine($"Running - Threads: {numThreads}, EventSize: {eventSize * sizeof(char):N} bytes, EventRate: {eventRate} events/sec");
             Console.ReadLine();
 
             for (int i = 0; i < numThreads; i++)
