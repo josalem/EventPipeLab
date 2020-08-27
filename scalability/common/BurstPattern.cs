@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Threading;
 
 namespace Common
@@ -65,11 +66,12 @@ namespace Common
                 {
                     return () => 
                     {
-                        DateTime start = DateTime.Now;
+                        Stopwatch sw = new Stopwatch();
+                        sw.Start();
                         for (int i = 0; i < rate; i++) { method(); } 
-                        TimeSpan duration = DateTime.Now - start;
-                        if (duration.TotalSeconds < 1)
-                            Thread.Sleep(1000 - (int)Math.Floor(duration.TotalMilliseconds));
+                        sw.Stop();
+                        if (sw.Elapsed.TotalSeconds < 1)
+                            Thread.Sleep(1000 - (int)Math.Floor((double)sw.ElapsedMilliseconds));
                     };
                 }
                 case BurstPattern.HEAVY_DRIP:

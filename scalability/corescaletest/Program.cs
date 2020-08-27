@@ -34,13 +34,14 @@ namespace corescaletest
         {
             if (args.Length == 0)
             {
-                Console.WriteLine("Usage: dotnet run [number of threads] [event size] [event rate #/sec]");
+                Console.WriteLine("Usage: dotnet run [number of threads] [event size] [event rate #/sec] [burst pattern]");
                 return;
             }
 
             int numThreads = args.Length > 0 ? Int32.Parse(args[0]) : 4;
             int eventSize = args.Length > 1 ? Int32.Parse(args[1]) : 100;
             eventRate = args.Length > 2 ? Int32.Parse(args[2]) : -1;
+            burstPattern = args.Length > 3 ? args[3].ToBurstPattern() : BurstPattern.NONE;
 
             MySource.s_Payload = new String('a', eventSize);
 
@@ -53,7 +54,7 @@ namespace corescaletest
                 threads[i] = new Thread(() => threadProc());
             }
 
-            Console.WriteLine($"Running - Threads: {numThreads}, EventSize: {eventSize * sizeof(char):N} bytes, EventRate: {eventRate} events/sec");
+            Console.WriteLine($"Running - Threads: {numThreads}, EventSize: {eventSize * sizeof(char):N} bytes, EventRate: {eventRate * numThreads} events/sec");
             Console.ReadLine();
 
             for (int i = 0; i < numThreads; i++)

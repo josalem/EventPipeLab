@@ -94,7 +94,7 @@ namespace orchestrator
             if (EVENT_RATE == -1 && burstPattern != BurstPattern.NONE)
                 throw new ArgumentException("Must have burst pattern of NONE if rate is -1");
 
-            Console.WriteLine($"Configuration: event_size={EVENT_SIZE}, min_cores={NUM_CORES_MIN}, max_cores={NUM_CORES_MAX}, num_threads={NUM_THREADS}, reader={READER_TYPE}, event_rate={EVENT_RATE}, burst_pattern={burstPattern.ToString()}");
+            Console.WriteLine($"Configuration: event_size={EVENT_SIZE}, min_cores={NUM_CORES_MIN}, max_cores={NUM_CORES_MAX}, num_threads={NUM_THREADS}, reader={READER_TYPE}, event_rate={EVENT_RATE * NUM_THREADS}, burst_pattern={burstPattern.ToString()}");
 
             Measure(args[0]);
         }
