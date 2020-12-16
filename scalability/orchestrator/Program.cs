@@ -16,6 +16,7 @@ using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
 
 using Common;
+using System.Runtime.InteropServices;
 
 namespace orchestrator
 {
@@ -30,10 +31,13 @@ namespace orchestrator
         static int NUM_THREADS = -1;
 
         static int EVENT_RATE = -1;
+        static TimeSpan DURATION = TimeSpan.FromMinutes(1);
 
         static string READER_TYPE = "EPES";
 
         static int EVENT_SIZE = 100;
+
+        static bool SIMULATE_SLOW_READ = false;
 
         static BurstPattern burstPattern = BurstPattern.DRIP;
 
@@ -61,7 +65,7 @@ namespace orchestrator
 #endif // _WINDOWS
             if (args.Length < 1)
             {
-                Console.WriteLine("Usage: dotnet run [path-to-corescaletest.exe] [eventsize] [core min] [core max] [numThreads] [reader type (stream|EPES)] [event rate] [burst pattern]");
+                Console.WriteLine("Usage: dotnet run [path-to-corescaletest.exe] [eventsize] [core min] [core max] [numThreads] [reader type (stream|EPES)] [event rate] [burst pattern] [simulate slow read] [duration in sec]");
                 return;
             }
             if (!File.Exists(args[0]))
@@ -85,6 +89,10 @@ namespace orchestrator
 
             EVENT_RATE = args.Length > 6 ? Int32.Parse(args[6]) : -1;
             burstPattern = args.Length > 7 ? args[7].ToBurstPattern() : BurstPattern.NONE;
+            SIMULATE_SLOW_READ = args.Length > 8 ? bool.Parse(args[8]) : false;
+            DURATION = args.Length > 9 ? 
+                (int.TryParse(args[9], out int nSeconds) && nSeconds > 0 ? TimeSpan.FromSeconds(nSeconds) : TimeSpan.FromSeconds(60)) :
+                TimeSpan.FromSeconds(60);
 
             if (READER_TYPE == "stream")
                 threadProc = UseFS;
@@ -94,7 +102,7 @@ namespace orchestrator
             if (EVENT_RATE == -1 && burstPattern != BurstPattern.NONE)
                 throw new ArgumentException("Must have burst pattern of NONE if rate is -1");
 
-            Console.WriteLine($"Configuration: event_size={EVENT_SIZE}, min_cores={NUM_CORES_MIN}, max_cores={NUM_CORES_MAX}, num_threads={NUM_THREADS}, reader={READER_TYPE}, event_rate={EVENT_RATE * NUM_THREADS}, burst_pattern={burstPattern.ToString()}");
+            Console.WriteLine($"Configuration: event_size={EVENT_SIZE}, min_cores={NUM_CORES_MIN}, max_cores={NUM_CORES_MAX}, num_threads={NUM_THREADS}, reader={READER_TYPE}, event_rate={EVENT_RATE * NUM_THREADS}, burst_pattern={burstPattern.ToString()}, slow_reader={SIMULATE_SLOW_READ}, duration={DURATION}");
 
             Measure(args[0]);
         }
@@ -107,6 +115,8 @@ namespace orchestrator
         {
             int pid = (int)arg;
             int eventsRead = 0;
+            var sw = new Stopwatch();
+            var interval = TimeSpan.FromSeconds(0.75);
             DiagnosticsClient client = new DiagnosticsClient(pid);
             while (!client.CheckTransport())
             {
@@ -119,7 +129,17 @@ namespace orchestrator
             EventPipeEventSource epes = new EventPipeEventSource(session.EventStream);
             epes.Dynamic.All += (TraceEvent data) => {
                 eventsRead += 1;
+                if (SIMULATE_SLOW_READ)
+                {
+                    if (sw.Elapsed > interval)
+                    {
+                        Thread.Sleep(250);
+                        sw.Reset();
+                    }
+                }
             };
+            if (SIMULATE_SLOW_READ)
+                sw.Start();
             epes.Process();
             Console.WriteLine("Used realtime.");
             Console.WriteLine("Read total: " + eventsRead.ToString());
@@ -176,9 +196,13 @@ namespace orchestrator
 
                 Process eventWritingProc = new Process();
                 eventWritingProc.StartInfo.FileName = fileName;
-                eventWritingProc.StartInfo.Arguments = $"{(NUM_THREADS == -1 ? num_cores.ToString() : NUM_THREADS.ToString())} {EVENT_SIZE} {EVENT_RATE} {burstPattern}";
+                eventWritingProc.StartInfo.Arguments = $"{(NUM_THREADS == -1 ? num_cores.ToString() : NUM_THREADS.ToString())} {EVENT_SIZE} {EVENT_RATE} {burstPattern} {(int)DURATION.TotalSeconds}";
                 eventWritingProc.StartInfo.UseShellExecute = false;
                 eventWritingProc.StartInfo.RedirectStandardInput = true;
+                eventWritingProc.StartInfo.Environment["COMPlus_StressLog"] = "1";
+                eventWritingProc.StartInfo.Environment["COMPlus_LogFacility"] = "2000";
+                eventWritingProc.StartInfo.Environment["COMPlus_LogLevel"] = "8";
+                eventWritingProc.StartInfo.Environment["COMPlus_StressLogSize"] = "0x1000000";
                 eventWritingProc.Start();
 
                 Console.WriteLine($"Executing: {eventWritingProc.StartInfo.FileName} {eventWritingProc.StartInfo.Arguments}");
@@ -188,8 +212,11 @@ namespace orchestrator
                 {
                     affinityMask |= (1 << j);
                 }
-                eventWritingProc.ProcessorAffinity = (IntPtr)((long)eventWritingProc.ProcessorAffinity & affinityMask);
-                eventWritingProc.PriorityClass = ProcessPriorityClass.RealTime; // Set the process priority to highest possible
+                if (!RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+                {
+                    eventWritingProc.ProcessorAffinity = (IntPtr)((long)eventWritingProc.ProcessorAffinity & affinityMask);
+                    eventWritingProc.PriorityClass = ProcessPriorityClass.RealTime; // Set the process priority to highest possible
+                }
 
                 // Start listening to the event.
 
@@ -197,6 +224,9 @@ namespace orchestrator
                 CancellationTokenSource  ct = new CancellationTokenSource();
                 Thread t = new Thread(() => threadProc(eventWritingProc.Id));
                 t.Start();
+
+                Console.WriteLine("Press <enter> to start test");
+                Console.ReadLine();
 
                 // start the target process
                 StreamWriter writer = eventWritingProc.StandardInput;
@@ -218,8 +248,8 @@ namespace orchestrator
             Console.WriteLine("**** Summary ****");
             for (int i = NUM_CORES_MIN; i <= NUM_CORES_MAX; i++)
             {
-                Console.WriteLine($"{i} cores: {eventCounts[i].Item1:N} events fired, {eventCounts[i].Item2:N} events dropped.");
-                Console.WriteLine($"\t({(long)eventCounts[i].Item1/60:N} events/s) ({((long)eventCounts[i].Item1*EVENT_SIZE*sizeof(char))/60:N} bytes/s)");
+                Console.WriteLine($"{i} cores: {eventCounts[i].Item1:N} events collected, {eventCounts[i].Item2:N} events dropped ({100 * ((double)eventCounts[i].Item1 / (double)((long)eventCounts[i].Item1 + eventCounts[i].Item2))}%)");
+                Console.WriteLine($"\t({(long)eventCounts[i].Item1/(int)DURATION.TotalSeconds:N} events/s) ({((long)eventCounts[i].Item1*EVENT_SIZE*sizeof(char))/(int)DURATION.TotalSeconds:N} bytes/s)");
             }
         }
     }

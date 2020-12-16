@@ -47,20 +47,33 @@ namespace Common
                 _ => "UNKOWN"
             };
 
+        public static void DefaultSleepAction(int duration) => Thread.Sleep(duration);
+        public static void BusySleepAction(int duration)
+        {
+            string busyString = "0";
+            DateTime start = DateTime.Now;
+            while (DateTime.Now.Subtract(start).TotalMilliseconds < duration)
+            {
+                busyString += "0";
+            }
+        }
+
         /// <summary>
         /// Invoke <param name="method"/> <param name="rate"/> times in 1 second using the <param name="pattern"/> provided
         /// </summary>
-        public static Action Burst(BurstPattern pattern, int rate, Action method)
+        public static Action Burst(BurstPattern pattern, int rate, Action method, Action<int> sleepAction = null)
         {
             if (rate == 0)
                 throw new ArgumentException("Rate cannot be 0");
+            if (sleepAction == null)
+                throw new ArgumentException("sleep action cannot be null");
 
             switch (pattern)
             {
                 case BurstPattern.DRIP:
                 {
                     int sleepInMs = (int)Math.Floor(1000.0/rate);
-                    return () => { method(); Thread.Sleep(sleepInMs); };
+                    return () => { method(); sleepAction?.Invoke(sleepInMs); };
                 }
                 case BurstPattern.BOLUS:
                 {
@@ -71,7 +84,7 @@ namespace Common
                         for (int i = 0; i < rate; i++) { method(); } 
                         sw.Stop();
                         if (sw.Elapsed.TotalSeconds < 1)
-                            Thread.Sleep(1000 - (int)Math.Floor((double)sw.ElapsedMilliseconds));
+                            sleepAction?.Invoke(1000 - (int)Math.Floor((double)sw.ElapsedMilliseconds));
                     };
                 }
                 case BurstPattern.HEAVY_DRIP:
@@ -85,7 +98,7 @@ namespace Common
                         {
                             for (int j = 0; j < nEventsPerDrip; i++)
                                 method();
-                            Thread.Sleep(sleepInMs);
+                            sleepAction?.Invoke(sleepInMs);
                         }
                     };
                 }
