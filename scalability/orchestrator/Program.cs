@@ -19,7 +19,7 @@ using Microsoft.Diagnostics.Tracing;
 using Process = System.Diagnostics.Process;
 using System.Linq;
 
-namespace orchestrator
+namespace Orchestrator
 {
     public enum ReaderType
     {
@@ -120,7 +120,7 @@ namespace orchestrator
         /// This uses EventPipeEventSource's Stream constructor to parse the events real-time.
         /// It then returns the number of events read.
         /// </summary>
-        private static Func<int,(long, long, TimeSpan)> UseEPES(bool rundown, int bufferSize, int slowReader)
+        private static Func<int, TestResult> UseEPES(bool rundown, int bufferSize, int slowReader)
         {
             return (int pid) =>
             {
@@ -154,7 +154,7 @@ namespace orchestrator
                 Console.WriteLine("Read total: " + eventsRead.ToString());
                 Console.WriteLine("Dropped total: " + epes.EventsLost.ToString());
 
-                return (eventsRead, epes.EventsLost, totalTimeSw.Elapsed);
+                return new TestResult(eventsRead, epes.EventsLost, totalTimeSw.Elapsed);
             };
         }
 
@@ -162,7 +162,7 @@ namespace orchestrator
         /// This uses CopyTo to copy the trace into a filesystem first, and then uses EventPipeEventSource
         /// on the file to post-process it and return the total # of events read.
         /// </summary>
-        static Func<int, (long, long, TimeSpan)> UseFS(bool rundown, int bufferSize)
+        static Func<int, TestResult> UseFS(bool rundown, int bufferSize)
         {
             return (int pid) =>
             {
@@ -187,7 +187,7 @@ namespace orchestrator
                 Console.WriteLine("Read total: " + eventsRead.ToString());
                 Console.WriteLine("Dropped total: " + epes.EventsLost.ToString());
 
-                return (eventsRead, epes.EventsLost, totalTimeSw.Elapsed);
+                return new TestResult(eventsRead, epes.EventsLost, totalTimeSw.Elapsed);
             };
         }
 
@@ -223,9 +223,9 @@ namespace orchestrator
             };
 
             var durationTimeSpan = TimeSpan.FromSeconds(duration); 
-            var testResults = new List<(long, long, TimeSpan)>(iterations);
+            var testResults = new TestResults(eventSize);
 
-            Func<int, (long,long,TimeSpan)> threadProc = readerType switch
+            Func<int, TestResult> threadProc = readerType switch
             {
                 ReaderType.Stream => UseFS(rundown, bufferSize),
                 ReaderType.EventPipeEventSource => UseEPES(rundown, bufferSize, slowReader),
@@ -235,7 +235,7 @@ namespace orchestrator
             if (eventRate == -1 && burstPattern != BurstPattern.NONE)
                 throw new ArgumentException("Must have burst pattern of NONE if rate is -1");
 
-            Console.WriteLine($"Configuration: event_size={eventSize}, event_rate={eventRate}, ores={cores}, num_threads={threads}, reader={readerType}, event_rate={(eventRate == -1 ? -1 : eventRate * threads)}, burst_pattern={burstPattern.ToString()}, slow_reader={slowReader}, duration={duration}");
+            Console.WriteLine($"Configuration: event_size={eventSize}, event_rate={eventRate}, cores={cores}, num_threads={threads}, reader={readerType}, event_rate={(eventRate == -1 ? -1 : eventRate * threads)}, burst_pattern={burstPattern.ToString()}, slow_reader={slowReader}, duration={duration}");
 
             for (int iteration = 0; iteration < iterations; iteration++)
             {
@@ -267,7 +267,7 @@ namespace orchestrator
                 }
 
                 // Start listening to the event.
-                Task<(long, long, TimeSpan)> listenerTask = Task.Run(() => threadProc(eventWritingProc.Id), ct);
+                Task<TestResult> listenerTask = Task.Run(() => threadProc(eventWritingProc.Id), ct);
 
                 if (pause)
                 {
@@ -287,45 +287,9 @@ namespace orchestrator
                 Console.WriteLine("========================================================");
 
             }
-            
-            Console.WriteLine("**** Summary ****");
-            for (int i = 0; i < iterations; i++)
-            {
-                Console.WriteLine($"iteration {i+1}: {testResults[i].Item1:N} events collected, {testResults[i].Item2:N} events dropped in {testResults[i].Item3.TotalSeconds:N} seconds - ({100 * ((double)testResults[i].Item1 / (double)((long)testResults[i].Item1 + testResults[i].Item2))}% throughput)");
-                Console.WriteLine($"\t({(double)testResults[i].Item1/testResults[i].Item3.TotalSeconds:N} events/s) ({((double)testResults[i].Item1*eventSize*sizeof(char))/testResults[i].Item3.TotalSeconds:N} bytes/s)");
-            }
 
-            // TODO: encapsulate this...
-            // calculate the stats
-            double averageEventsRead = testResults.Average(tuple => tuple.Item1);
-            double stddevEventsRead = Math.Sqrt(testResults.Average(tuple => Math.Pow((tuple.Item1 - averageEventsRead), 2)));
-
-            double averageEventsDropped = testResults.Average(tuple => tuple.Item2);;
-            double stddevEventsDropped = Math.Sqrt(testResults.Average(tuple => Math.Pow((tuple.Item2 - averageEventsDropped), 2)));
-
-            double averageThroughputEfficiency = testResults.Average(tuple => 100 * ((double)tuple.Item1 / ((double)tuple.Item1 + tuple.Item2)));
-            double stddevThroughputEfficiency = Math.Sqrt(testResults.Average(tuple => Math.Pow((100 * ((double)tuple.Item1 / ((double)tuple.Item1 + tuple.Item2))) - averageThroughputEfficiency, 2)));
-
-            double averageEventThroughput = testResults.Average(tuple => (double)tuple.Item1 / tuple.Item3.TotalSeconds);
-            double stddevEventThroughput = Math.Sqrt(testResults.Average(tuple => Math.Pow(((double)tuple.Item1 / tuple.Item3.TotalSeconds) - averageEventThroughput, 2)));
-
-            double averageDataThroughput = testResults.Average(tuple => (((double)tuple.Item1 * eventSize * sizeof(char)) / tuple.Item3.TotalSeconds));
-            double stddevDataThroughput = Math.Sqrt(testResults.Average(tuple => Math.Pow((((double)tuple.Item1 * eventSize * sizeof(char)) / tuple.Item3.TotalSeconds) - averageDataThroughput, 2)));
-
-            double averageSeconds = testResults.Average(tuple => tuple.Item3.TotalSeconds);
-            double stddevSeconds = Math.Sqrt(testResults.Average(tuple => Math.Pow((tuple.Item3.TotalSeconds - averageSeconds), 2)));
-
-            Console.WriteLine();
-            Console.WriteLine($"|{new string('-',35),-35}|{new string('-',30),-30}|{new string('-',30),-30}|");
-            Console.WriteLine($"|{" stat",-35}|{" Average",-30}|{" Standard Deviation",-30}|");
-            Console.WriteLine($"|{new string('-',35),-35}|{new string('-',30),-30}|{new string('-',30),-30}|");
-            Console.WriteLine($"|{" Events Read",-35}|{$"{averageEventsRead}",30:N2}|{$"{stddevEventsRead}",30:N2}|");
-            Console.WriteLine($"|{" Events Dropped",-35}|{$"{averageEventsDropped}",30:N2}|{$"{stddevEventsDropped}",30:N2}|");
-            Console.WriteLine($"|{" Efficiency (%)",-35}|{$"{averageThroughputEfficiency}",30:N2}|{$"{stddevThroughputEfficiency}",30:N2}|");
-            Console.WriteLine($"|{" Time (seconds)",-35}|{$"{averageSeconds}",30:N5}|{$"{stddevSeconds}",30:N5}|");
-            Console.WriteLine($"|{" Event Throughput (events/sec)",-35}|{$"{averageEventThroughput}",30:N2}|{$"{stddevEventThroughput}",30:N2}|");
-            Console.WriteLine($"|{" Data Throughput (Bytes/sec)",-35}|{$"{averageDataThroughput}",30:N2}|{$"{stddevDataThroughput}",30:N2}|");
-            Console.WriteLine($"|{new string('-',35),-35}|{new string('-',30),-30}|{new string('-',30),-30}|");
+            Console.WriteLine(testResults.GenerateSummary());
+            Console.WriteLine(testResults.GenerateStatisticsTable());
 
             return 0;
         }

@@ -3,7 +3,7 @@ using System;
 using System.CommandLine;
 using System.CommandLine.Parsing;
 
-namespace orchestrator
+namespace Orchestrator
 {
     public static class OrchestrateCommandLine
     {
