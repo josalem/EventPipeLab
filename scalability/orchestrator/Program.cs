@@ -17,6 +17,7 @@ using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
 
 using Process = System.Diagnostics.Process;
+using System.Linq;
 
 namespace orchestrator
 {
@@ -28,9 +29,6 @@ namespace orchestrator
 
     class Program
     {
-        static private Dictionary<int, (long, long, TimeSpan)> EventCountDict = new Dictionary<int, (long, long, TimeSpan)>();
-        static private int CurrentCoreCount = -1;
-
         delegate Task<int> RootCommandHandler(
             IConsole console,
             CancellationToken ct,
@@ -41,12 +39,12 @@ namespace orchestrator
             ReaderType readerType,
             int slowReader,
             int duration,
-            int minCore,
-            int maxCore,
+            int cores,
             int threads,
             int eventCount,
             bool rundown,
             int bufferSize,
+            int iterations,
             bool pause);
 
         // TODO: Add iteration mode to run the same test multiple times and get the average, median, stddev of the data
@@ -90,47 +88,50 @@ namespace orchestrator
                 OrchestrateCommandLine.ReaderTypeOption,
                 OrchestrateCommandLine.SlowReaderOption,
                 CommandLineOptions.DurationOption,
-                OrchestrateCommandLine.MinCoreOption,
-                OrchestrateCommandLine.MaxCoreOption,
+                OrchestrateCommandLine.CoresOption,
                 CommandLineOptions.ThreadsOption,
                 CommandLineOptions.EventCountOption,
                 OrchestrateCommandLine.RundownOption,
                 OrchestrateCommandLine.BufferSizeOption,
+                OrchestrateCommandLine.IterationsOption,
                 OrchestrateCommandLine.PauseOption
             };
 
 
             rootCommand.Handler = CommandHandler.Create((RootCommandHandler)Orchestrate);
-            rootCommand.AddValidator(OrchestrateCommandLine.CoreMinMaxCoherentValidator);
             return new CommandLineBuilder(rootCommand);
         }
 
-        
+        private static EventPipeSession GetSession(int pid, bool rundown, int bufferSize)
+        {
+            DiagnosticsClient client = new DiagnosticsClient(pid);
+            while (!client.CheckTransport())
+            {
+                Console.WriteLine("still unable to talk");
+                Thread.Sleep(50);
+            }
+            return client.StartEventPipeSession(
+                new EventPipeProvider("MySource", EventLevel.Verbose), 
+                requestRundown: rundown, 
+                circularBufferMB: bufferSize);
+        }
+
         /// <summary>
         /// This uses EventPipeEventSource's Stream constructor to parse the events real-time.
         /// It then returns the number of events read.
         /// </summary>
-        static Action<object> UseEPES(int bufferSize, bool rundown, int slowReader)
+        private static Func<int,(long, long, TimeSpan)> UseEPES(bool rundown, int bufferSize, int slowReader)
         {
-            return (object arg) =>
+            return (int pid) =>
             {
-                int pid = (int)arg;
                 int eventsRead = 0;
                 var slowReadSw = new Stopwatch();
                 var totalTimeSw = new Stopwatch();
                 var interval = TimeSpan.FromSeconds(0.75);
-                DiagnosticsClient client = new DiagnosticsClient(pid);
-                while (!client.CheckTransport())
-                {
-                    Console.WriteLine("still unable to talk");
-                    Thread.Sleep(50);
-                }
-                EventPipeSession session = client.StartEventPipeSession(
-                    new EventPipeProvider("MySource", EventLevel.Verbose), 
-                    requestRundown: rundown, 
-                    circularBufferMB: bufferSize);
 
-                Console.WriteLine("session open");
+                EventPipeSession session = GetSession(pid, rundown, bufferSize);
+                Console.WriteLine("Session created.");
+
                 EventPipeEventSource epes = new EventPipeEventSource(session.EventStream);
                 epes.Dynamic.All += (TraceEvent data) => {
                     eventsRead += 1;
@@ -153,34 +154,24 @@ namespace orchestrator
                 Console.WriteLine("Read total: " + eventsRead.ToString());
                 Console.WriteLine("Dropped total: " + epes.EventsLost.ToString());
 
-                EventCountDict[CurrentCoreCount] = (eventsRead, epes.EventsLost, totalTimeSw.Elapsed);
+                return (eventsRead, epes.EventsLost, totalTimeSw.Elapsed);
             };
         }
 
         /// <summary>
-        /// This uses CopyToAsync to copy the trace into a filesystem first, and then uses EventPipeEventSource
+        /// This uses CopyTo to copy the trace into a filesystem first, and then uses EventPipeEventSource
         /// on the file to post-process it and return the total # of events read.
         /// </summary>
-        static Action<object> UseFS(int bufferSize, bool rundown)
+        static Func<int, (long, long, TimeSpan)> UseFS(bool rundown, int bufferSize)
         {
-            return (object arg) =>
+            return (int pid) =>
             {
-                int pid = (int)arg;
                 int eventsRead = 0;
                 var totalTimeSw = new Stopwatch();
                 const string fileName = "./temp.nettrace";
-                DiagnosticsClient client = new DiagnosticsClient(pid);
-                while (!client.CheckTransport())
-                {
-                    Console.WriteLine("still unable to talk");
-                    Thread.Sleep(50);
-                }
-                EventPipeSession session = client.StartEventPipeSession(
-                    new EventPipeProvider("MySource", EventLevel.Verbose),
-                    requestRundown: rundown,
-                    circularBufferMB: bufferSize);
 
-                Console.WriteLine("session open");
+                EventPipeSession session = GetSession(pid, rundown, bufferSize);
+                Console.WriteLine("Session created.");
 
                 using (FileStream fs = new FileStream(fileName, FileMode.Create, FileAccess.Write))
                 {
@@ -196,7 +187,7 @@ namespace orchestrator
                 Console.WriteLine("Read total: " + eventsRead.ToString());
                 Console.WriteLine("Dropped total: " + epes.EventsLost.ToString());
 
-                EventCountDict[CurrentCoreCount] = (eventsRead, epes.EventsLost, totalTimeSw.Elapsed);
+                return (eventsRead, epes.EventsLost, totalTimeSw.Elapsed);
             };
         }
 
@@ -210,12 +201,12 @@ namespace orchestrator
             ReaderType readerType,
             int slowReader,
             int duration,
-            int minCore,
-            int maxCore,
+            int cores,
             int threads,
             int eventCount,
             bool rundown,
             int bufferSize,
+            int iterations,
             bool pause)
         {
             if (!corescaletestPath.Exists)
@@ -232,29 +223,28 @@ namespace orchestrator
             };
 
             var durationTimeSpan = TimeSpan.FromSeconds(duration); 
+            var testResults = new List<(long, long, TimeSpan)>(iterations);
 
-            Action<object> threadProc = readerType switch
+            Func<int, (long,long,TimeSpan)> threadProc = readerType switch
             {
-                ReaderType.Stream => UseFS(bufferSize, rundown),
-                ReaderType.EventPipeEventSource => UseEPES(bufferSize, rundown, slowReader),
+                ReaderType.Stream => UseFS(rundown, bufferSize),
+                ReaderType.EventPipeEventSource => UseEPES(rundown, bufferSize, slowReader),
                 _ => throw new ArgumentException("Invalid reader type")
             };
 
             if (eventRate == -1 && burstPattern != BurstPattern.NONE)
                 throw new ArgumentException("Must have burst pattern of NONE if rate is -1");
 
-            Console.WriteLine($"Configuration: event_size={eventSize}, event_rate={eventRate}, min_cores={minCore}, max_cores={maxCore}, num_threads={threads}, reader={readerType}, event_rate={(eventRate == -1 ? -1 : eventRate * threads)}, burst_pattern={burstPattern.ToString()}, slow_reader={slowReader}, duration={duration}");
+            Console.WriteLine($"Configuration: event_size={eventSize}, event_rate={eventRate}, ores={cores}, num_threads={threads}, reader={readerType}, event_rate={(eventRate == -1 ? -1 : eventRate * threads)}, burst_pattern={burstPattern.ToString()}, slow_reader={slowReader}, duration={duration}");
 
-            for (int num_cores = minCore; num_cores <= maxCore; num_cores++)
+            for (int iteration = 0; iteration < iterations; iteration++)
             {
-                CurrentCoreCount = num_cores;
-
                 Console.WriteLine("========================================================");
-                Console.WriteLine("Starting run with proc count " + num_cores.ToString());
+                Console.WriteLine($"Starting iteration {iteration + 1}");
 
                 Process eventWritingProc = new Process();
                 eventWritingProc.StartInfo.FileName = corescaletestPath.FullName;
-                eventWritingProc.StartInfo.Arguments = $"--threads {(threads == -1 ? num_cores.ToString() : threads.ToString())} --event-count {eventCount} --event-size {eventSize} --event-rate {eventRate} --burst-pattern {burstPattern} --duration {(int)durationTimeSpan.TotalSeconds}";
+                eventWritingProc.StartInfo.Arguments = $"--threads {(threads == -1 ? cores.ToString() : threads.ToString())} --event-count {eventCount} --event-size {eventSize} --event-rate {eventRate} --burst-pattern {burstPattern} --duration {(int)durationTimeSpan.TotalSeconds}";
                 eventWritingProc.StartInfo.UseShellExecute = false;
                 eventWritingProc.StartInfo.RedirectStandardInput = true;
                 eventWritingProc.StartInfo.Environment["COMPlus_StressLog"] = "1";
@@ -268,7 +258,7 @@ namespace orchestrator
                 {
                     // Set affinity and priority
                     ulong affinityMask = 0;
-                    for (int j = 0; j < num_cores; j++)
+                    for (int j = 0; j < cores; j++)
                     {
                         affinityMask |= ((ulong)1 << j);
                     }
@@ -277,7 +267,7 @@ namespace orchestrator
                 }
 
                 // Start listening to the event.
-                var listenerTask = Task.Run(() => threadProc(eventWritingProc.Id), ct);
+                Task<(long, long, TimeSpan)> listenerTask = Task.Run(() => threadProc(eventWritingProc.Id), ct);
 
                 if (pause)
                 {
@@ -290,19 +280,52 @@ namespace orchestrator
                 writer.WriteLine("\r\n");
                 eventWritingProc.WaitForExit();
 
-                await listenerTask;
-                
-                Console.WriteLine("Done with proc count " + num_cores.ToString());
+                var resultTuple = await listenerTask;
+                testResults.Add(resultTuple);
+
+                Console.WriteLine($"Done with iteration {iteration + 1}");
                 Console.WriteLine("========================================================");
 
             }
             
             Console.WriteLine("**** Summary ****");
-            for (int i = minCore; i <= maxCore; i++)
+            for (int i = 0; i < iterations; i++)
             {
-                Console.WriteLine($"{i} cores: {EventCountDict[i].Item1:N} events collected, {EventCountDict[i].Item2:N} events dropped in {EventCountDict[i].Item3.TotalSeconds:N} seconds - ({100 * ((double)EventCountDict[i].Item1 / (double)((long)EventCountDict[i].Item1 + EventCountDict[i].Item2))}% throughput)");
-                Console.WriteLine($"\t({(double)EventCountDict[i].Item1/EventCountDict[i].Item3.TotalSeconds:N} events/s) ({((double)EventCountDict[i].Item1*eventSize*sizeof(char))/EventCountDict[i].Item3.TotalSeconds:N} bytes/s)");
+                Console.WriteLine($"iteration {i+1}: {testResults[i].Item1:N} events collected, {testResults[i].Item2:N} events dropped in {testResults[i].Item3.TotalSeconds:N} seconds - ({100 * ((double)testResults[i].Item1 / (double)((long)testResults[i].Item1 + testResults[i].Item2))}% throughput)");
+                Console.WriteLine($"\t({(double)testResults[i].Item1/testResults[i].Item3.TotalSeconds:N} events/s) ({((double)testResults[i].Item1*eventSize*sizeof(char))/testResults[i].Item3.TotalSeconds:N} bytes/s)");
             }
+
+            // TODO: encapsulate this...
+            // calculate the stats
+            double averageEventsRead = testResults.Average(tuple => tuple.Item1);
+            double stddevEventsRead = Math.Sqrt(testResults.Average(tuple => Math.Pow((tuple.Item1 - averageEventsRead), 2)));
+
+            double averageEventsDropped = testResults.Average(tuple => tuple.Item2);;
+            double stddevEventsDropped = Math.Sqrt(testResults.Average(tuple => Math.Pow((tuple.Item2 - averageEventsDropped), 2)));
+
+            double averageThroughputEfficiency = testResults.Average(tuple => 100 * ((double)tuple.Item1 / ((double)tuple.Item1 + tuple.Item2)));
+            double stddevThroughputEfficiency = Math.Sqrt(testResults.Average(tuple => Math.Pow((100 * ((double)tuple.Item1 / ((double)tuple.Item1 + tuple.Item2))) - averageThroughputEfficiency, 2)));
+
+            double averageEventThroughput = testResults.Average(tuple => (double)tuple.Item1 / tuple.Item3.TotalSeconds);
+            double stddevEventThroughput = Math.Sqrt(testResults.Average(tuple => Math.Pow(((double)tuple.Item1 / tuple.Item3.TotalSeconds) - averageEventThroughput, 2)));
+
+            double averageDataThroughput = testResults.Average(tuple => (((double)tuple.Item1 * eventSize * sizeof(char)) / tuple.Item3.TotalSeconds));
+            double stddevDataThroughput = Math.Sqrt(testResults.Average(tuple => Math.Pow((((double)tuple.Item1 * eventSize * sizeof(char)) / tuple.Item3.TotalSeconds) - averageDataThroughput, 2)));
+
+            double averageSeconds = testResults.Average(tuple => tuple.Item3.TotalSeconds);
+            double stddevSeconds = Math.Sqrt(testResults.Average(tuple => Math.Pow((tuple.Item3.TotalSeconds - averageSeconds), 2)));
+
+            Console.WriteLine();
+            Console.WriteLine($"|{new string('-',35),-35}|{new string('-',30),-30}|{new string('-',30),-30}|");
+            Console.WriteLine($"|{" stat",-35}|{" Average",-30}|{" Standard Deviation",-30}|");
+            Console.WriteLine($"|{new string('-',35),-35}|{new string('-',30),-30}|{new string('-',30),-30}|");
+            Console.WriteLine($"|{" Events Read",-35}|{$"{averageEventsRead}",30:N2}|{$"{stddevEventsRead}",30:N2}|");
+            Console.WriteLine($"|{" Events Dropped",-35}|{$"{averageEventsDropped}",30:N2}|{$"{stddevEventsDropped}",30:N2}|");
+            Console.WriteLine($"|{" Efficiency (%)",-35}|{$"{averageThroughputEfficiency}",30:N2}|{$"{stddevThroughputEfficiency}",30:N2}|");
+            Console.WriteLine($"|{" Time (seconds)",-35}|{$"{averageSeconds}",30:N5}|{$"{stddevSeconds}",30:N5}|");
+            Console.WriteLine($"|{" Event Throughput (events/sec)",-35}|{$"{averageEventThroughput}",30:N2}|{$"{stddevEventThroughput}",30:N2}|");
+            Console.WriteLine($"|{" Data Throughput (Bytes/sec)",-35}|{$"{averageDataThroughput}",30:N2}|{$"{stddevDataThroughput}",30:N2}|");
+            Console.WriteLine($"|{new string('-',35),-35}|{new string('-',30),-30}|{new string('-',30),-30}|");
 
             return 0;
         }

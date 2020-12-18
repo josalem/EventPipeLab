@@ -61,38 +61,38 @@ namespace orchestrator
             private set {}
         }
 
-        static private Option<int> _minCoreOption = null;
-        static public Option<int> MinCoreOption 
+        static private Option<int> _coresOption = null;
+        static public Option<int> CoresOption 
         {
             get
             {
-                if (_minCoreOption != null)
-                    return _minCoreOption;
+                if (_coresOption != null)
+                    return _coresOption;
 
-                _minCoreOption = new Option<int>(
-                                        alias: "--min-core",
+                _coresOption = new Option<int>(
+                                        alias: "--cores",
                                         getDefaultValue: () => Environment.ProcessorCount,
-                                        description: "The minimum number of cores to use.");
-                _minCoreOption.AddValidator(CoreValueMustBeFeasibleValidator);
-                return _minCoreOption;
+                                        description: "The number of logical cores to restrict the writing process to.");
+                _coresOption.AddValidator(CoreValueMustBeFeasibleValidator);
+                return _coresOption;
             }
             private set {}
         }
 
-        static private Option<int> _maxCoreOption = null;
-        static public Option<int> MaxCoreOption 
+        static private Option<int> _iterationsOption = null;
+        static public Option<int> IterationsOption 
         {
             get
             {
-                if (_maxCoreOption != null)
-                    return _maxCoreOption;
+                if (_iterationsOption != null)
+                    return _iterationsOption;
 
-                _maxCoreOption = new Option<int>(
-                                        alias: "--max-core",
-                                        getDefaultValue: () => Environment.ProcessorCount,
-                                        description: "The maximum number of cores to use.");
-                _maxCoreOption.AddValidator(CoreValueMustBeFeasibleValidator);
-                return _maxCoreOption;
+                _iterationsOption = new Option<int>(
+                                        alias: "--iterations",
+                                        getDefaultValue: () => 1,
+                                        description: "The number of times to run the test.");
+                _iterationsOption.AddValidator(CommandLineOptions.GreaterThanZeroValidator);
+                return _iterationsOption;
             }
             private set {}
         }
@@ -102,15 +102,6 @@ namespace orchestrator
             int val = result.GetValueOrDefault<int>();
             if (val < 1 || val > Environment.ProcessorCount)
                 return $"Core count must be between 1 and {Environment.ProcessorCount}";
-            return null;
-        };
-
-        static public ValidateSymbol<CommandResult> CoreMinMaxCoherentValidator = (CommandResult result) =>
-        {
-            int minCore = result.FindResultFor(MinCoreOption).GetValueOrDefault<int>();
-            int maxCore = result.FindResultFor(MaxCoreOption).GetValueOrDefault<int>();
-            if (minCore > maxCore)
-                return $"(minCore={minCore}, maxCore={maxCore}) minCore must be less than or equal to maxCore.";
             return null;
         };
     }

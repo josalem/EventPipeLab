@@ -39,7 +39,7 @@ namespace Common
                 _eventSizeOption = new Option<int>(
                                         alias: "--event-size",
                                         getDefaultValue: () => 100,
-                                        description: "The size of events to send in Bytes.");
+                                        description: "The size of the event payload.  The payload is a string, so the actual size will be eventSize * sizeof(char) where sizeof(char) is 2 Bytes due to Unicode in C#.");
                 _eventSizeOption.AddValidator(GreaterThanZeroValidator);
                 return _eventSizeOption;
             }
@@ -119,7 +119,7 @@ namespace Common
                 _eventCountOption = new Option<int>(
                                             alias: "--event-count",
                                             getDefaultValue: () => -1,
-                                            description: "The total number of events to write.  -1 means no limit");
+                                            description: "The total number of events to write per thread.  -1 means no limit");
                 _eventCountOption.AddValidator(MustBeNegOneOrPositiveValidator);
                 return _eventCountOption;
             }
