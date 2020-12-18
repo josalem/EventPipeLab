@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.Tracing;
 using System.IO;
@@ -17,7 +16,6 @@ using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
 
 using Process = System.Diagnostics.Process;
-using System.Linq;
 
 namespace Orchestrator
 {
@@ -47,7 +45,8 @@ namespace Orchestrator
             int iterations,
             bool pause);
 
-        // TODO: Add iteration mode to run the same test multiple times and get the average, median, stddev of the data
+        // TODO: Collect CPU % of reader and writer while running test and add to stats
+        // TODO: Standardize and clean up logging from orchestrator and corescaletest
 
         static async Task<int> Main(string[] args)
         {
