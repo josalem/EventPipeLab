@@ -61,7 +61,7 @@ namespace Common
         /// <summary>
         /// Invoke <param name="method"/> <param name="rate"/> times in 1 second using the <param name="pattern"/> provided
         /// </summary>
-        public static Action Burst(BurstPattern pattern, int rate, Action method, Action<int> sleepAction = null)
+        public static Func<long> Burst(BurstPattern pattern, int rate, Action method, Action<int> sleepAction = null)
         {
             if (rate == 0)
                 throw new ArgumentException("Rate cannot be 0");
@@ -73,7 +73,7 @@ namespace Common
                 case BurstPattern.DRIP:
                 {
                     int sleepInMs = (int)Math.Floor(1000.0/rate);
-                    return () => { method(); sleepAction?.Invoke(sleepInMs); };
+                    return () => { method(); sleepAction?.Invoke(sleepInMs); return 1; };
                 }
                 case BurstPattern.BOLUS:
                 {
@@ -85,6 +85,7 @@ namespace Common
                         sw.Stop();
                         if (sw.Elapsed.TotalSeconds < 1)
                             sleepAction?.Invoke(1000 - (int)Math.Floor((double)sw.ElapsedMilliseconds));
+                        return rate;
                     };
                 }
                 case BurstPattern.HEAVY_DRIP:
@@ -100,11 +101,12 @@ namespace Common
                                 method();
                             sleepAction?.Invoke(sleepInMs);
                         }
+                        return nEventsPerDrip * nDrips;
                     };
                 }
                 case BurstPattern.NONE:
                 {
-                    return method;
+                    return () => { method(); return 1; };
                 }
                 default:
                     throw new ArgumentException("Unkown burst pattern");

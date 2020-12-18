@@ -1,7 +1,12 @@
 ﻿using System;
+using System.CommandLine;
+using System.CommandLine.Builder;
+using System.CommandLine.Invocation;
+using System.CommandLine.Parsing;
 using System.Diagnostics.Tracing;
+using System.Linq;
 using System.Threading;
-
+using System.Threading.Tasks;
 using Common;
 
 namespace corescaletest
@@ -24,52 +29,86 @@ namespace corescaletest
         private static int eventRate = -1;
         private static BurstPattern burstPattern = BurstPattern.NONE;
         private static Action threadProc = null;
-        private static Func<Action> makeThreadProc = () =>
+        private static Action makeThreadProc(int eventCount)
         {
-            Action burst = BurstPatternMethods.Burst(burstPattern, eventRate, MySource.Log.FireEvent, BurstPatternMethods.BusySleepAction);
-            return () => { while (!finished) { burst(); } };
-        };
-
-        static void Main(string[] args)
-        {
-            if (args.Length == 0)
+            Func<long> burst = BurstPatternMethods.Burst(burstPattern, eventRate, MySource.Log.FireEvent, BurstPatternMethods.BusySleepAction);
+            if (eventCount != -1)
             {
-                Console.WriteLine("Usage: dotnet run [number of threads] [event size] [event rate #/sec] [burst pattern] [duration in sec]");
-                return;
+                return () => { 
+                    long messagesSent = 0; 
+                    while (!finished && messagesSent < eventCount)
+                        messagesSent += burst();
+                };
             }
+            else
+                return () => { while (!finished) { burst(); } };
+        }
 
-            int numThreads = args.Length > 0 ? Int32.Parse(args[0]) : 4;
-            int eventSize = args.Length > 1 ? Int32.Parse(args[1]) : 100;
-            eventRate = args.Length > 2 ? Int32.Parse(args[2]) : -1;
-            burstPattern = args.Length > 3 ? args[3].ToBurstPattern() : BurstPattern.NONE;
-            TimeSpan duration = args.Length > 4 ? 
-                (int.TryParse(args[4], out int nSeconds) && nSeconds > 0 ? TimeSpan.FromSeconds(nSeconds) : TimeSpan.FromSeconds(60)) :
-                TimeSpan.FromSeconds(60);
+        private delegate Task<int> RootCommandHandler(IConsole console, CancellationToken ct, int eventSize, int eventRate, BurstPattern burstPattern, int threads, int duration, int eventCount);
+
+        private static CommandLineBuilder BuildCommandLine()
+        {
+            var rootCommand = new RootCommand("EventPipe Stress Tester - Writer")
+            {
+                CommandLineOptions.EventSizeOption,
+                CommandLineOptions.EventRateOption,
+                CommandLineOptions.BurstPatternOption,
+                CommandLineOptions.DurationOption,
+                CommandLineOptions.ThreadsOption,
+                CommandLineOptions.EventCountOption
+            };
+
+
+            rootCommand.Handler = CommandHandler.Create((RootCommandHandler)Run);
+            return new CommandLineBuilder(rootCommand);
+        }
+
+        static async Task<int> Main(string[] args)
+        {
+            return await BuildCommandLine()
+                .UseDefaults()
+                .Build()
+                .InvokeAsync(args);
+        }
+
+        private static async Task<int> Run(IConsole console, CancellationToken ct, int eventSize, int eventRate, BurstPattern burstPattern, int threads, int duration, int eventCount)
+        {
+            TimeSpan durationTimeSpan = TimeSpan.FromSeconds(duration);
 
             MySource.s_Payload = new String('a', eventSize);
 
-            threadProc = makeThreadProc();
+            threadProc = makeThreadProc(eventCount);
 
-            Thread[] threads = new Thread[numThreads];
+            Thread[] threadArray = new Thread[threads];
+            TaskCompletionSource<bool>[] tcsArray = new TaskCompletionSource<bool>[threads];
 
-            for (int i = 0; i < numThreads; i++)
+            for (int i = 0; i < threads; i++)
             {
-                threads[i] = new Thread(() => threadProc());
+                var tcs = new TaskCompletionSource<bool>();
+                threadArray[i] = new Thread(() => { threadProc(); tcs.TrySetResult(true); });
+                tcsArray[i] = tcs;
             }
 
-            Console.WriteLine($"Running - Threads: {numThreads}, EventSize: {eventSize * sizeof(char):N} bytes, EventRate: {eventRate * numThreads} events/sec, duration: {duration.TotalSeconds}s");
+            Console.WriteLine($"SUBPROCESSS :: Running - Threads: {threads}, EventSize: {eventSize * sizeof(char):N} bytes, EventCount: {(eventCount == -1 ? -1 : eventCount * threads)}, EventRate: {(eventRate == -1 ? -1 : eventRate * threads)} events/sec, duration: {durationTimeSpan.TotalSeconds}s");
             Console.ReadLine();
 
-            for (int i = 0; i < numThreads; i++)
+            for (int i = 0; i < threads; i++)
             {
-                threads[i].Start();
+                threadArray[i].Start();
             }
             
-            Console.WriteLine($"Sleeping for {duration.TotalSeconds} seconds");
-            Thread.Sleep(duration);
+            if (eventCount != -1)
+                Console.WriteLine($"SUBPROCESSS :: Sleeping for {durationTimeSpan.TotalSeconds} seconds or until {eventCount} events have been sent on each thread, whichever happens first");
+            else
+                Console.WriteLine($"SUBPROCESSS :: Sleeping for {durationTimeSpan.TotalSeconds} seconds");
+
+            Task threadCompletionTask = Task.WhenAll(tcsArray.Select(tcs => tcs.Task));
+            Task result = await Task.WhenAny(Task.Delay(durationTimeSpan), threadCompletionTask);
             finished = true;
-            
-            Console.WriteLine("Done. Goodbye!");
+
+            await threadCompletionTask;
+            Console.WriteLine("SUBPROCESSS :: Done. Goodbye!");
+            return 0;
         }
     }
 }
